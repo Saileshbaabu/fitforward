@@ -4,3 +4,4 @@ python-docx
 keybert
 jobspy
 pandas
+git+https://github.com/Bunsly/JobSpy.git
