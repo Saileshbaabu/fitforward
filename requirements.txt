@@ -4,4 +4,6 @@ python-docx
 keybert
 jobspy
 pandas
+scikit-learn
 git+https://github.com/Bunsly/JobSpy.git
+
