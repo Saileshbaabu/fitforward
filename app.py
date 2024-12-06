@@ -5,6 +5,8 @@ from keybert import KeyBERT
 from jobspy import scrape_jobs
 import pandas as pd
 import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Function to extract text from PDF
 def extract_text_from_pdf(file):
@@ -19,14 +21,23 @@ def extract_text_from_docx(file):
 
 # Preprocess function (clean and prepare text)
 def preprocess_text(text):
+    if not isinstance(text, str):  # Handle non-string and NaN values
+        return ""
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\d+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+# Function to generate feedback based on keyword comparison
+def generate_feedback(resume_keywords, job_keywords):
+    resume_set = set(resume_keywords)
+    job_set = set(job_keywords)
+    missing_keywords = job_set - resume_set
+    return missing_keywords
+
 # Streamlit App Configuration
-st.set_page_config(page_title="Resume-Based Job Finder", layout="wide")
+st.set_page_config(page_title="Resume-Based Job Finder with Feedback", layout="wide")
 
 # Sidebar for Settings
 st.sidebar.title("Job Finder Settings")
@@ -43,8 +54,8 @@ if selected_job_title == "Custom":
 job_title_to_search = custom_job_title if selected_job_title == "Custom" else selected_job_title
 
 # Main Page Layout
-st.title("📄 Resume-Based Job Finder")
-st.markdown("Upload your resume (PDF, TXT, or DOCX), and we will analyze it to find matching jobs!")
+st.title("📄 FitForward with Feedback")
+st.markdown("Upload your resume (PDF, TXT, or DOCX), and we will analyze it to find the top 5 matching jobs and provide feedback!")
 st.markdown("---")
 
 # File uploader
@@ -72,7 +83,7 @@ if uploaded_file:
             resume_keywords = [kw[0] for kw in kw_model.extract_keywords(resume_text_cleaned, keyphrase_ngram_range=(1, 2), top_n=10)]
 
             st.success("Resume processed successfully!")
-            st.markdown("### 🗒️ Extracted Keywords:")
+            st.markdown("### 🗒️ Extracted Keywords from Resume:")
             st.write(", ".join(resume_keywords))
 
             # Display job title being searched
@@ -89,31 +100,61 @@ if uploaded_file:
                 country_indeed="USA",
             )
 
-            # Debugging: Check the structure of the jobs object
-            st.write("Jobs Object Debug:")
+            # Display the jobs DataFrame for debugging
             if isinstance(jobs, pd.DataFrame):
-                st.write(jobs.columns)
+                st.write("Jobs Object Debug:")
                 st.write(jobs.head())
             else:
-                st.write(jobs)
+                st.error("No jobs found. Please refine your search.")
+                st.stop()
 
-            # Display results
-            if len(jobs) > 0:
-                st.markdown("### 🎯 Top Matching Jobs:")
-                for _, job in jobs.iterrows():
+            # Check if the "description" column exists
+            if "description" in jobs.columns:
+                # Preprocess the descriptions and handle missing values
+                jobs["description"] = jobs["description"].apply(preprocess_text)
+
+                # Extract keywords from job descriptions
+                jobs["job_keywords"] = jobs["description"].apply(
+                    lambda desc: [kw[0] for kw in kw_model.extract_keywords(desc, keyphrase_ngram_range=(1, 2), top_n=10)]
+                )
+
+                # Compute cosine similarity between resume and job descriptions
+                vectorizer = TfidfVectorizer()
+                all_texts = [" ".join(resume_keywords)] + jobs["job_keywords"].apply(" ".join).tolist()
+                tfidf_matrix = vectorizer.fit_transform(all_texts)
+
+                # Calculate cosine similarity
+                similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+                jobs["similarity_score"] = similarities
+
+                # Sort jobs by similarity score in descending order
+                top_jobs = jobs.sort_values(by="similarity_score", ascending=False).head(5)
+
+                # Display top 5 jobs with feedback
+                st.markdown("### 🎯 Top 5 Matching Jobs with Feedback:")
+                for _, job in top_jobs.iterrows():
                     title = job.get("job_title", "N/A")
                     company = job.get("company", "N/A")
+                    description = job.get("description", "No description available.")
+                    similarity = job.get("similarity_score", 0) * 100
                     url = job.get("job_url", "#")
+                    job_keywords = job.get("job_keywords", [])
+
+                    # Generate feedback
+                    missing_keywords = generate_feedback(resume_keywords, job_keywords)
+
                     st.markdown(f"**💼 {title}** at **{company}**")
+                    st.markdown(f"**Similarity Score**: {similarity:.2f}%")
+                    st.markdown(f"**Description**: {description[:200]}...")
                     st.markdown(f"[🌐 Apply Here]({url})")
+                    st.markdown("#### 📝 Feedback:")
+                    if missing_keywords:
+                        st.write(f"Consider adding these keywords to your resume: {', '.join(missing_keywords)}")
+                    else:
+                        st.write("Your resume already matches this job description well!")
                     st.markdown("---")
             else:
-                st.warning("No matching jobs found. Try adjusting your resume or keywords.")
-
-            # Download button for job results
-            st.markdown("### 📥 Download Job Results:")
-            jobs_csv = jobs.to_csv(index=False)
-            st.download_button("Download as CSV", data=jobs_csv, file_name="jobs.csv", mime="text/csv")
+                st.error("Job descriptions are not available. Cannot calculate ranking or feedback.")
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
